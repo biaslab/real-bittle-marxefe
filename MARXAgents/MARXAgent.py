@@ -199,7 +199,7 @@ class MARXAgent:
         self.free_energy = float('inf')
 
 
-def acc2pos(acc, prev_state, dt=1.0):
+def acc2pos(acc, prev_state, dt=1.0, reg=0.0):
     "Kalman filter for accelerometer integration"
 
     # State transition matrix
@@ -241,8 +241,8 @@ def acc2pos(acc, prev_state, dt=1.0):
     Is = C @ state_pred_S @ C.T + R
     Kg = state_pred_S @ C.T @ inv(Is)
     state_m = state_pred_m + Kg @ (acc - C @ state_pred_m)
-    state_S = (np.eye(9) - Kg @ C) @ state_pred_S
+    state_S = (np.eye(9) - Kg @ C) @ state_pred_S + reg*np.eye(9)
 
     state = multivariate_normal(state_m,state_S)
 
-    return state.mean[0:2], state
+    return state_m[:3], state

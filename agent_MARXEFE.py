@@ -4,7 +4,7 @@
 # MindPlus
 # Python
 from OpenCatPythonAPI.PetoiRobot import *
-from MARXAgents import MARXAgent
+from MARXAgents import MARXAgent, acc2pos
 import datetime as dtime
 import numpy as np
 import numpy.random as rnd
@@ -17,7 +17,7 @@ from scipy.optimize import minimize
 if __name__ == '__main__':
 
     # Time
-    len_trial = 100
+    len_trial = 200
     len_horizon = 2;
     now = dtime.datetime.now().strftime('%Y-%m-%d-%H-%M-%S')
 
@@ -36,7 +36,7 @@ if __name__ == '__main__':
     Upsilon0  = 1e-4*np.diag(np.ones(Du))
 
     # Setpoint (desired observation)
-    m_star = [0.0, -10., 0.0, 0.0, 0.0, 0.0] # [yaw, pitch, roll, a_x, a_y, a_z]
+    m_star = [0.0, -10., 0.0, 0.0, 0.0, 0.0] # [yaw, pitch, roll, p_x, p_y, p_z]
     v_star = [1e0, 1e-5, 1e0, 1e3, 1e3, 1e3]
     goal   = multivariate_normal(m_star, np.diag(v_star))
 
@@ -46,12 +46,14 @@ if __name__ == '__main__':
 
     # Boot up agent
     agent = MARXAgent(Mean0, Lambda0, Omega0, Nu0, Upsilon0, goal, Dy=Dy, Du=Du, delay_inp=Mu, delay_out=My, time_horizon=len_horizon)
+    state_base = multivariate_normal(np.zeros(9),10*np.eye(9))
 
     # Preallocate
     times       = np.zeros((len_trial))
     preds_m     = np.zeros((Dy,len_trial))
     preds_P     = np.repeat(np.expand_dims(np.eye(Dy), axis=2), len_trial, axis=2)
     preds_v     = np.zeros((Dy,len_trial))
+    positions   = np.zeros((3,len_trial))
     y_          = np.zeros((Dy,len_trial))
     u_          = np.zeros((Du,len_trial))
     FE_         = np.zeros((len_trial))
@@ -69,20 +71,21 @@ if __name__ == '__main__':
         # send(goodPorts, ['I', [8, 0, 12, 0, 9, 0, 13, 0, 11, 0, 15, 0, 10, 0, 14, 0], 0.0])
 
         # Start the stopwatch
-        start_time = timeit.default_timer()
+        times[0] = timeit.default_timer()
         for k in range(1,len_trial):
             times[k] = timeit.default_timer()
             logger.info(f"tstep = {k}/{len_trial}")
+            dt = times[k] - times[k-1]
 
-            # "Change goal prior"
-            # if k == 100:
-            #     m_star = [0.0, 10., 0.0, 0.0, 0.0, 0.0] # [yaw, pitch, roll, a_x, a_y, a_z]
-            #     v_star = [1e0, 1e-5, 1e0, 1e3, 1e3, 1e3]
-            #     goal   = multivariate_normal(m_star, np.diag(v_star))
-            #     agent.goal_prior = goal
-            # goals_m[:,k] = agent.goal_prior.mean
+            # Change goal prior
+            if k == 100:
+                m_star = [0.0, 0.0, 0.0, 10.0, 0.0, 0.0] # [yaw, pitch, roll, p_x, p_y, p_z]
+                v_star = [1e0, 1e0, 1e0, 1e0-3, 1e3, 1e3]
+                goal   = multivariate_normal(m_star, np.diag(v_star))
+                agent.goal_prior = goal
+            goals_m[:,k] = agent.goal_prior.mean
 
-            "Predict observation"
+            # Predict observation"
         
             # Calculate posterior predictive
             x_k = np.concatenate([agent.ubuffer.flatten(), agent.ybuffer.flatten()])
@@ -105,12 +108,10 @@ if __name__ == '__main__':
             send(goodPorts, ['I', actions, 0.0])
         
             # Read IMU
-            serial_IMU = send(goodPorts, ['v', 0.0])
-            ypr_acc = serial_IMU[1].split()
-            y_[:,k] = np.array(ypr_acc)
-
-            # Normalize accelerations
-            y_[3:,k] /= 1e6
+            ypracc = send(goodPorts, ['v', 0])
+            ypracc = np.array(ypracc[1].split()[-6:],dtype='float64')
+            positions[:,k], state_base = acc2pos(ypracc[-3:]/1e3, state_base, dt=dt, reg=np.maximum(1e-3,10*dt))
+            y_[:,k] = np.concatenate([ypracc[:3],positions[:,k]])
                     
             "Parameter estimation"
 
@@ -138,10 +139,10 @@ if __name__ == '__main__':
                 policy = 10*rnd.random((Du*len_horizon))
             else:
                 policy = results.x
+
+            # Impose safety constraints
             u_[:,k] = np.clip(policy[:Du], a_min=u_lims[0], a_max=u_lims[1]).astype(int)
-            # u_[:,k] = np.clip(10*rnd.randn(8), a_min=-30, a_max=30).astype(int)
             logger.info(u_[:,k])
-            logger.debug(policy)
 
 
         closeAllSerial(goodPorts)
