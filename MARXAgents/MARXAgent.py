@@ -1,10 +1,12 @@
 import numpy as np
 from scipy.linalg import inv, det
 from numpy.linalg import slogdet
+from scipy.stats import multivariate_normal
 from scipy.special import gamma, gammaln
 from scipy.optimize import minimize
 import pickle
 import os
+
 
 class MARXAgent:
     """
@@ -195,3 +197,52 @@ class MARXAgent:
         self.ubuffer = np.zeros((self.Du, self.delay_inp))
         self.ybuffer = np.zeros((self.Dy, self.delay_out))
         self.free_energy = float('inf')
+
+
+def acc2pos(acc, prev_state, dt=1.0):
+    "Kalman filter for accelerometer integration"
+
+    # State transition matrix
+    A = np.array([[1, 0, 0, dt,  0,  0, dt**2/2,       0,       0],
+                  [0, 1, 0,  0, dt,  0,       0, dt**2/2,       0],
+                  [0, 0, 1,  0,  0, dt,       0,       0, dt**2/2],
+                  [0, 0, 0,  1,  0,  0,      dt,       0,       0],
+                  [0, 0, 0,  0,  1,  0,       0,      dt,       0],
+                  [0, 0, 0,  0,  0,  1,       0,       0,      dt],
+                  [0, 0, 0,  0,  0,  0,       1,       0,       0],
+                  [0, 0, 0,  0,  0,  0,       0,       1,       0],
+                  [0, 0, 0,  0,  0,  0,       0,       0,       1]])
+    
+    # Process noise covariance matrix
+    σ   = 1e-1
+    block1 = np.diag(np.repeat([dt**5/20], 3))
+    block2 = np.diag(np.repeat([dt**4/8], 3))
+    block3 = np.diag(np.repeat([dt**3/6], 3))
+    block4 = np.diag(np.repeat([dt**2/2], 3))
+    block5 = np.diag(np.repeat([dt], 3))
+    Q = σ*np.block([[block1,block2,block3],
+                    [block2,block3,block4],
+                    [block3,block4,block5]])
+    
+    # Measurement matrix
+    C = np.array([[1, 0, 0, 0, 0, 0, 0, 0, 0],
+                  [0, 1, 0, 0, 0, 0, 0, 0, 0],
+                  [0, 0, 1, 0, 0, 0, 0, 0, 0]])
+    
+    # Measurement noise covariance matrix
+    ρ = 1e-2
+    R = np.diag(ρ*np.ones(3))
+
+    # Prediction step
+    state_pred_m = A @ prev_state.mean
+    state_pred_S = A @ prev_state.cov @ A.T + Q
+
+    # Correction step
+    Is = C @ state_pred_S @ C.T + R
+    Kg = state_pred_S @ C.T @ inv(Is)
+    state_m = state_pred_m + Kg @ (acc - C @ state_pred_m)
+    state_S = (np.eye(9) - Kg @ C) @ state_pred_S
+
+    state = multivariate_normal(state_m,state_S)
+
+    return state.mean[0:2], state
