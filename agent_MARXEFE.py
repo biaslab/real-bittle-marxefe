@@ -17,13 +17,13 @@ from scipy.optimize import minimize
 if __name__ == '__main__':
 
     # Time
-    len_trial = 500
-    len_horizon = 5;
+    len_trial = 100
+    len_horizon = 2;
     now = dtime.datetime.now().strftime('%Y-%m-%d-%H-%M-%S')
 
     # Dimensionalities
-    Mu = 3 # includes current control uk
-    My = 3
+    Mu = 2 # includes current control uk
+    My = 2
     Dy = 6 
     Du = 8
     Dx = My*Dy + (Mu+1)*Du
@@ -31,13 +31,13 @@ if __name__ == '__main__':
     # Prior parameters
     Nu0 = 20.
     Omega0 = 1e0*np.diag(np.ones(Dy))
-    Lambda0 = 1e-2*np.diag(np.ones(Dx))
+    Lambda0 = 1e-3*np.diag(np.ones(Dx))
     Mean0 = 1e-8*rnd.randn(Dx,Dy)
-    Upsilon0  = 0.0*np.diag(np.ones(Du))
+    Upsilon0  = 1e-4*np.diag(np.ones(Du))
 
     # Setpoint (desired observation)
-    m_star = [0.0, 10., 0.0, 0.0, 0.0, 0.0] # [yaw, pitch, roll, a_x, a_y, a_z]
-    v_star = [1e-1, 1e-3, 1e-1, 1e3, 1e3, 1e3]
+    m_star = [0.0, -10., 0.0, 0.0, 0.0, 0.0] # [yaw, pitch, roll, a_x, a_y, a_z]
+    v_star = [1e0, 1e-5, 1e0, 1e3, 1e3, 1e3]
     goal   = multivariate_normal(m_star, np.diag(v_star))
 
     # Control limits
@@ -55,6 +55,7 @@ if __name__ == '__main__':
     y_          = np.zeros((Dy,len_trial))
     u_          = np.zeros((Du,len_trial))
     FE_         = np.zeros((len_trial))
+    goals_m     = np.zeros((Dy,len_trial))
     Means       = np.zeros((Dx,Dy,len_trial))
     Lambdas     = np.repeat(np.expand_dims(np.eye(Dx), axis=2), len_trial, axis=2)
     Omegas      = np.repeat(np.expand_dims(np.eye(Dy), axis=2), len_trial, axis=2)
@@ -65,7 +66,7 @@ if __name__ == '__main__':
 
         connectPort(goodPorts)    
         send(goodPorts, ['B', 0.0])
-        send(goodPorts, ['I', [8, 0, 12, 0, 9, 0, 13, 0, 11, 0, 15, 0, 10, 0, 14, 0], 0.0])
+        # send(goodPorts, ['I', [8, 0, 12, 0, 9, 0, 13, 0, 11, 0, 15, 0, 10, 0, 14, 0], 0.0])
 
         # Start the stopwatch
         start_time = timeit.default_timer()
@@ -73,12 +74,13 @@ if __name__ == '__main__':
             times[k] = timeit.default_timer()
             logger.info(f"tstep = {k}/{len_trial}")
 
-            "Change goal prior"
-            if k == 200:
-                m_star = [0.0, 0.0, 0.0, 10.0, 0.0, 0.0] # [roll, pitch, yaw, a_x, a_y, a_z]
-                v_star = [1e0, 1e0, 1e0, 1e-3, 1e2, 1e2]
-                goal   = multivariate_normal(m_star, np.diag(v_star))
-                agent.goal_prior = goal
+            # "Change goal prior"
+            # if k == 100:
+            #     m_star = [0.0, 10., 0.0, 0.0, 0.0, 0.0] # [yaw, pitch, roll, a_x, a_y, a_z]
+            #     v_star = [1e0, 1e-5, 1e0, 1e3, 1e3, 1e3]
+            #     goal   = multivariate_normal(m_star, np.diag(v_star))
+            #     agent.goal_prior = goal
+            # goals_m[:,k] = agent.goal_prior.mean
 
             "Predict observation"
         
@@ -108,7 +110,7 @@ if __name__ == '__main__':
             y_[:,k] = np.array(ypr_acc)
 
             # Normalize accelerations
-            y_[3:,k] /= 1e3
+            y_[3:,k] /= 1e6
                     
             "Parameter estimation"
 
@@ -129,7 +131,7 @@ if __name__ == '__main__':
             
             # Call minimizer using constrained L-BFGS procedure
             bounds = [u_lims] * (Du*len_horizon)
-            results = minimize(agent.EFE, policy, method='L-BFGS-B', bounds=bounds, options={'disp': True, 'maxiter': 1})
+            results = minimize(agent.EFE, policy, method='L-BFGS-B', bounds=bounds, options={'disp': True, 'maxiter': 10})
             
             # Extract minimizing control
             if k < 10:
@@ -137,6 +139,7 @@ if __name__ == '__main__':
             else:
                 policy = results.x
             u_[:,k] = np.clip(policy[:Du], a_min=u_lims[0], a_max=u_lims[1]).astype(int)
+            # u_[:,k] = np.clip(10*rnd.randn(8), a_min=-30, a_max=30).astype(int)
             logger.info(u_[:,k])
             logger.debug(policy)
 
@@ -151,6 +154,7 @@ if __name__ == '__main__':
         np.save("results/trials/agent-MARXEFE-" + now + "-preds_m.npy", preds_m)
         np.save("results/trials/agent-MARXEFE-" + now + "-preds_v.npy", preds_v)
         np.save("results/trials/agent-MARXEFE-" + now + "-preds_P.npy", preds_P)
+        np.save("results/trials/agent-MARXEFE-" + now + "-goals_m.npy", goals_m)
         np.save("results/params/agent-MARXEFE-" + now + "-Means.npy", Means)
         np.save("results/params/agent-MARXEFE-" + now + "-Lambdas.npy", Lambdas)
         np.save("results/params/agent-MARXEFE-" + now + "-Omegas.npy", Omegas)
